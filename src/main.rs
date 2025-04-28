@@ -1,22 +1,6 @@
-// // src/main.rs
-// use openvm::io::{read, reveal_u32};
-
-// fn main() {
-//     let n: u64 = read();
-//     let mut a: u64 = 0;
-//     let mut b: u64 = 1;
-//     for _ in 0..n {
-//         let c: u64 = a.wrapping_add(b);
-//         a = b;
-//         b = c;
-//     }
-//     reveal_u32(a as u32, 0);
-//     reveal_u32((a >> 32) as u32, 1);
-// }
-
-extern crate alloc;
-use alloc::vec::Vec;
-use openvm::io::read;
+// src/main.rs
+use std::vec::Vec;
+use openvm::io::{read, reveal_u32};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use openvm_sha256_guest::sha256;
@@ -76,11 +60,6 @@ fn rsa_verify_complete(sig: &[u8], exponent: u32, message_hash: &[u8]) -> bool {
     // Create U2048 from byte arrays
     let modulus = U2048::from_be_slice(&modulus_bytes);
     
-    // Convert signature to U2048
-    // let mut sig_bytes = [0u8; 512];
-    // let offset = 512 - sig.len();
-    // sig_bytes[offset..].copy_from_slice(sig);
-    // let sig_val = U4096::from_be_slice(&sig_bytes);
     // Convert signature to U2048
     let mut sig_bytes = [0u8; 256];
     let offset = 256 - sig.len();
@@ -171,45 +150,33 @@ fn main() {
     let pepper_low = read::<u128>();
     let pepper = U256::from_words([pepper_low as u64, (pepper_low >> 64) as u64,
                                    pepper_high as u64, (pepper_high >> 64) as u64]);
+    let pepper_bytes = pepper.to_be_bytes();
     
     let epoch: u64 = read();
     
     // Process JWT
     let jwt_str = core::str::from_utf8(&jwt_bytes).expect("Invalid UTF-8 JWT");
-
     // Split off signature (base64url)
     let dot2 = jwt_str.rfind('.').expect("Missing signature '.'");
     let signed_data = &jwt_str[..dot2];
     let sig_b64 = &jwt_str[dot2+1..];
     let sig_bytes = base64_url_decode(sig_b64);
-
     // Split header.payload → decode payload JSON
     let dot1 = signed_data.find('.').expect("Missing payload '.'");
     let payload_json = &signed_data[dot1+1..];
-
-    // --- RSA signature (RS256) verification ---
-    // Compute SHA256(header.payload)
-    let hash = sha256(signed_data.as_bytes());
-
-    // Use RSA verification with built-in modulus
-    let sig_valid = rsa_verify_complete(&sig_bytes, rsa_exponent, &hash);
-    assert!(sig_valid, "RSA signature verification failed");
 
     // --- JSON structural checks ---
     assert!(payload_json.starts_with('{') && payload_json.ends_with('}'), "Bad JSON");
     assert!(!payload_json[1..payload_json.len()-1].contains('{'), "Nested object");
     assert!(!payload_json.contains('['), "Arrays disallowed");
-
     // --- Extract & validate each field ---
     // aud
     let aud_raw = get_json_value(payload_json, "aud");
     assert!(aud_raw.starts_with('"') && aud_raw.ends_with('"'), "aud not string");
     let aud = str_to_bytes(&aud_raw[1..aud_raw.len()-1]);
-
     // iss
     let iss_raw = get_json_value(payload_json, "iss");
     assert!(iss_raw.starts_with('"') && iss_raw.ends_with('"'), "iss not string");
-
     // uid
     let uid_raw = get_json_value(payload_json, "sub");
     let uid = if uid_raw.starts_with('"') {
@@ -218,62 +185,44 @@ fn main() {
     } else {
         str_to_bytes(uid_raw)
     };
-
     // Verify that iat is not too far from current epoch
     let iat: u64 = get_json_value(payload_json, "iat").parse().expect("iat not number");
     const MAX_JWT_AGE_SECONDS: u64 = 86400; // 24 hours
     let time_diff = if epoch > iat { epoch - iat } else { iat - epoch };
     assert!(time_diff <= MAX_JWT_AGE_SECONDS, "JWT is too old or from the future");
-
     // email_verified
     let ev = get_json_value(payload_json, "email_verified");
     assert!(ev == "True", "email_verified must be true");
+
+    // --- RSA signature (RS256) verification ---
+    // Compute SHA256(header.payload)
+    let hash = sha256(signed_data.as_bytes());
+    // Use RSA verification with built-in modulus
+    let sig_valid = rsa_verify_complete(&sig_bytes, rsa_exponent, &hash);
+    assert!(sig_valid, "RSA signature verification failed");
 
     // --- Nonce hash check ---
     let nonce_raw = get_json_value(payload_json, "nonce");
     assert!(nonce_raw.starts_with('"') && nonce_raw.ends_with('"'), "nonce not string");
     let nonce_bytes = base64_url_decode(&nonce_raw[1..nonce_raw.len()-1]);
-    // Convert to bytes and hash with sha256
-    let mut to_hash = Vec::new();
-    to_hash.extend_from_slice(&eph_pk.to_be_bytes());
-    to_hash.extend_from_slice(&eph_rand.to_be_bytes());
-    let nonce_hash = sha256(&to_hash);
-    // Compare hash bytes directly
+    let nonce_data = [&eph_pk.to_be_bytes()[..], &eph_rand.to_be_bytes()[..]].concat();
+    let nonce_hash = sha256(&nonce_data);
     assert!(nonce_hash.as_slice() == nonce_bytes.as_slice(), "nonce mismatch");
 
     // --- addr_seed & public_inputs_hash ---
-    let mut addr_seed_data = Vec::new();
-    addr_seed_data.extend_from_slice(&uid);
-    addr_seed_data.extend_from_slice(&aud);
-    addr_seed_data.extend_from_slice(&pepper.to_be_bytes());
-    let addr_seed = sha256(&addr_seed_data);
-    
-    // Combine and hash for public inputs
-    let mut public_inputs_data = Vec::new();
-    public_inputs_data.extend_from_slice(&addr_seed);
-    let pub_inputs = sha256(&public_inputs_data);
-
-    // reveal public_inputs_hash (4 chunks)
-    for i in 0..4 {
-        let start = i * 8;
-        let mut chunk = 0u64;
-        for j in 0..8 {
-            if start + j < pub_inputs.len() {
-                chunk |= (pub_inputs[start + j] as u64) << (8 * j);
-            }
-        }
-        println!("public_input chunk {}: {}", i, chunk);
+    let pkey_data = [&uid[..], &aud[..], &pepper_bytes[..]].concat();
+    let pkey = sha256(&pkey_data);
+    // Convert the SHA-256 hash (32 bytes) to [u32; 8]
+    let mut pkey_u32 = [0u32; 8];
+    for (i, value) in pkey_u32.iter_mut().enumerate() {
+        let start = i * 4;
+        *value = u32::from_be_bytes([
+            pkey[start], pkey[start + 1], pkey[start + 2], pkey[start + 3]
+        ]);
     }
-    
-    // reveal addr_seed (next 4)
-    for i in 0..4 {
-        let start = i * 8;
-        let mut chunk = 0u64;
-        for j in 0..8 {
-            if start + j < addr_seed.len() {
-                chunk |= (addr_seed[start + j] as u64) << (8 * j);
-            }
-        }
-        println!("addr_seed chunk {}: {}", i, chunk);
+
+    // Reveal the last 5 u32s as public inputs
+    for (offset, &value) in pkey_u32[3..8].iter().enumerate() {
+        reveal_u32(value, offset - 3);
     }
 }
