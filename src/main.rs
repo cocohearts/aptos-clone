@@ -13,26 +13,25 @@
 
 extern crate alloc;
 use alloc::vec::Vec;
-use openvm::io::{read, reveal_u64};
-use base64::{decode, encode_config};
-use openvm_bigint_guest::U256;
+use openvm::io::read;
+use base64::Engine;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use openvm_sha256_guest::sha256;
-use openvm_poseidon2_air::Poseidon;
 
 // Helper: decode Base64URL (with '-'→'+', '_'→'/', padding)
 fn base64_url_decode(s: &str) -> Vec<u8> {
     let mut b64 = s.replace('-', "+").replace('_', "/");
     let pad = (4 - b64.len() % 4) % 4;
     for _ in 0..pad { b64.push('='); }
-    decode(&b64).expect("Invalid Base64URL")
+    STANDARD.decode(&b64).expect("Invalid Base64URL")
 }
 
 // Helper: decimal string → U256
-fn decimal_str_to_u256(s: &str) -> U256 {
-    let mut acc = U256::ZERO;
+fn decimal_str_to_u256(s: &str) -> u64 {
+    let mut acc = 0;
     for &b in s.as_bytes() {
         let d = (b - b'0') as u64;
-        acc = acc * U256::from_u64(10) + U256::from_u64(d);
+        acc = acc * 10 + d;
     }
     acc
 }
@@ -44,12 +43,13 @@ fn get_json_value<'a>(json: &'a str, key: &str) -> &'a str {
     let slice = &json[i + pattern.len()..].trim_start();
     if slice.starts_with('"') {
         // string
-        let end = slice[1..].find('"').expect("Unclosed string") + 1;
-        &slice[..=end]
+        let without_first_quote = slice.strip_prefix('"').expect("Missing opening quote");
+        let end = without_first_quote.find('"').expect("Unclosed string");
+        &slice[..=end+1]
     } else {
         // number, bool, or literal until comma/bracket
         let end = slice.find(&[',', '}'][..]).unwrap_or(slice.len());
-        &slice[..end].trim_end_matches(',')
+        slice[..end].trim_end_matches(',')
     }
 }
 
@@ -58,7 +58,7 @@ fn main() {
     let jwt_len: u64 = read();
     let mut jwt_bytes = Vec::with_capacity(jwt_len as usize);
     for _ in 0..jwt_len {
-        jwt_bytes.push(read() as u8);
+        jwt_bytes.push(read::<u64>() as u8);
     }
     let jwt_str = core::str::from_utf8(&jwt_bytes).expect("Invalid UTF-8 JWT");
 
@@ -76,9 +76,9 @@ fn main() {
 
     // --- RSA signature (RS256) verification ---
     // Read RSA modulus (32 bytes default for 2048‑bit)
-    let mut rsa_mod = U256::ZERO;
+    let mut rsa_mod = 0;
     for i in 0..32 {
-        rsa_mod |= U256::from_u64(read() as u64) << U256::from_u64(8 * i);
+        rsa_mod |= read::<u64>() << (8 * i);
     }
     // Read exponent
     let rsa_e: u32 = read();
@@ -87,17 +87,15 @@ fn main() {
     let hash = sha256(signed_data.as_bytes());
 
     // Deserialize signature bytes → U256
-    let mut sig_val = U256::ZERO;
+    let mut sig_val = 0;
     for &b in sig_bytes.iter().rev() {
-        sig_val = (sig_val << U256::from_u64(8)) | U256::from_u64(b as u64);
+        sig_val = (sig_val << 8) | b as u64;
     }
 
     // Modular exponentiation: sig_val^e mod N
     let mut base = sig_val;
-    while base >= rsa_mod {
-        base = base - rsa_mod;
-    }
-    let mut result = U256::from_u64(1);
+    base &= rsa_mod;
+    let mut result = 1;
     let mut exp = rsa_e;
     while exp > 0 {
         if exp & 1 == 1 {
@@ -128,10 +126,9 @@ fn main() {
 
     // Compare decrypted bytes
     let mut dec_bytes = [0u8;256];
-    for i in 0..key_bytes {
+    for (i, byte_ref) in dec_bytes.iter_mut().enumerate().take(key_bytes) {
         let shift = 8 * (key_bytes - 1 - i);
-        let byte = ((&decrypted >> shift) & U256::from_u64(0xFF)).as_u64() as u8;
-        dec_bytes[i] = byte;
+        *byte_ref = ((decrypted >> shift) & 0xFF) as u8;
     }
     assert!(dec_bytes == expect_t.as_slice(), "RSA signature invalid");
 
@@ -176,61 +173,75 @@ fn main() {
     let extra = get_json_value(payload_json, "extra");
     assert!(!extra.starts_with('{') && !extra.starts_with('['), "extra must be primitive");
 
-    // --- Nonce Poseidon check ---
+    // --- Nonce hash check ---
     // Read ephemeral pk (32 bytes) & randomness (32 bytes) & epoch
-    let mut eph_pk = U256::ZERO;
-    for i in 0..32 {
-        eph_pk |= U256::from_u64(read() as u64) << (8 * i);
-    }
-    let mut eph_rand = U256::ZERO;
-    for i in 0..32 {
-        eph_rand |= U256::from_u64(read() as u64) << (8 * i);
-    }
+    let eph_pk_low: u128 = read::<u128>();
+    let eph_pk_high: u128 = read::<u128>();
+    
+    let eph_rand_low: u128 = read::<u128>();
+    let eph_rand_high: u128 = read::<u128>();
+    
     let epoch: u64 = read();
+    
+    // Verify that iat is not too far from current epoch
+    const MAX_JWT_AGE_SECONDS: u64 = 86400; // 24 hours
+    let time_diff = if epoch > iat { epoch - iat } else { iat - epoch };
+    assert!(time_diff <= MAX_JWT_AGE_SECONDS, "JWT is too old or from the future");
+    
+    // Convert to bytes and hash with sha256
+    let mut to_hash = Vec::new();
+    to_hash.extend_from_slice(&eph_pk_high.to_le_bytes());
+    to_hash.extend_from_slice(&eph_pk_low.to_le_bytes());
+    to_hash.extend_from_slice(&epoch.to_le_bytes());
+    to_hash.extend_from_slice(&eph_rand_high.to_le_bytes());
+    to_hash.extend_from_slice(&eph_rand_low.to_le_bytes());
+    let nonce_hash = sha256(&to_hash);
 
-    // split pk hi/lo
-    let pk_hi = eph_pk >> 128;
-    let pk_lo = eph_pk & ((U256::from_u64(1)<<128) - U256::from_u64(1));
-    let nonce_hash = Poseidon::hash(&[pk_hi, pk_lo, U256::from_u64(epoch), eph_rand]);
-
-    // to bytes (big-endian)
-    let mut nh_bytes = [0u8;32];
-    for i in 0..32 {
-        let shift = 8 * (31 - i);
-        nh_bytes[i] = ((&nonce_hash >> shift) & U256::from_u64(0xFF)).as_u64() as u8;
-    }
+    // Hash bytes directly
     let nh_b64 = {
-        let mut tmp = nh_bytes.to_vec();
-        base64::encode_config(&tmp, base64::URL_SAFE_NO_PAD)
+        URL_SAFE_NO_PAD.encode(nonce_hash)
     };
     assert!(nh_b64 == nonce, "nonce mismatch");
 
     // --- addr_seed & public_inputs_hash ---
     // hash aud, iss into field elems
     let aud_h = sha256(aud.as_bytes());
-    let mut aud_elem = U256::ZERO;
-    for &b in aud_h.iter().rev() {
-        aud_elem = (aud_elem << 8) | U256::from_u64(b as u64);
-    }
     let iss_h = sha256(iss.as_bytes());
-    let mut iss_elem = U256::ZERO;
-    for &b in iss_h.iter().rev() {
-        iss_elem = (iss_elem << 8) | U256::from_u64(b as u64);
-    }
-
-    let addr_seed = Poseidon::hash(&[uid, aud_elem, iss_elem]);
-    let pub_inputs = Poseidon::hash(&[iss_elem, aud_elem]);
+    
+    // Combine and hash for addr_seed
+    let mut addr_seed_data = Vec::new();
+    addr_seed_data.extend_from_slice(&uid.to_le_bytes());
+    addr_seed_data.extend_from_slice(&aud_h);
+    addr_seed_data.extend_from_slice(&iss_h);
+    let addr_seed = sha256(&addr_seed_data);
+    
+    // Combine and hash for public inputs
+    let mut public_inputs_data = Vec::new();
+    public_inputs_data.extend_from_slice(&iss_h);
+    public_inputs_data.extend_from_slice(&aud_h);
+    let pub_inputs = sha256(&public_inputs_data);
 
     // reveal public_inputs_hash (4 chunks)
-    let mut pi = pub_inputs;
     for i in 0..4 {
-        let chunk = (&pi >> (64 * i)) & U256::from_u64(u64::MAX);
-        reveal_u64(chunk.as_u64(), i as u32);
+        let start = i * 8;
+        let mut chunk = 0u64;
+        for j in 0..8 {
+            if start + j < pub_inputs.len() {
+                chunk |= (pub_inputs[start + j] as u64) << (8 * j);
+            }
+        }
+        println!("public_input chunk {}: {}", i, chunk);
     }
+    
     // reveal addr_seed (next 4)
-    let mut asd = addr_seed;
     for i in 0..4 {
-        let chunk = (&asd >> (64 * i)) & U256::from_u64(u64::MAX);
-        reveal_u64(chunk.as_u64(), 4 + i as u32);
+        let start = i * 8;
+        let mut chunk = 0u64;
+        for j in 0..8 {
+            if start + j < addr_seed.len() {
+                chunk |= (addr_seed[start + j] as u64) << (8 * j);
+            }
+        }
+        println!("addr_seed chunk {}: {}", i, chunk);
     }
 }
