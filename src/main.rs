@@ -20,8 +20,7 @@ use openvm::io::read;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use openvm_sha256_guest::sha256;
-use core::cmp::Ordering;
-use crypto_bigint::{U256, U512, U2048, U4096, Limb, NonZero, Integer, MulMod, AddMod, Uint};
+use crypto_bigint::{U256, U2048, U4096, NonZero};
 use crypto_bigint::Encoding;
 
 // Helper: decode Base64URL (with '-'→'+', '_'→'/', padding)
