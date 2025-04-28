@@ -20,6 +20,7 @@ use openvm::io::read;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use openvm_sha256_guest::sha256;
+use core::cmp::Ordering;
 
 // Pair for representing u256 as [high, low]
 struct Pair<T> {
@@ -80,7 +81,7 @@ fn rsa_verify_complete(sig: &[u8], modulus: &[u64; 32], exponent: u32, message_h
     let mut base = sig_val;
     
     // First, handle the least significant bit (which is 1 for e=65537)
-    result = *base;
+    result = base;
     
     // Perform 16 squarings to handle the upper bit
     for _ in 0..16 {
@@ -108,11 +109,11 @@ fn rsa_verify_complete(sig: &[u8], modulus: &[u64; 32], exponent: u32, message_h
     
     // Convert result to bytes and compare
     let mut result_bytes = [0u8; 256];
-    for i in 0..32 {
+    for (i, limb) in result.iter().enumerate() {
         for j in 0..8 {
             let byte_idx = i * 8 + j;
             if byte_idx < 256 {
-                result_bytes[255 - byte_idx] = ((result[i] >> (j * 8)) & 0xFF) as u8;
+                result_bytes[255 - byte_idx] = ((limb >> (j * 8)) & 0xFF) as u8;
             }
         }
     }
@@ -135,7 +136,7 @@ fn multiply_mod(a: &[u64; 32], b: &[u64; 32], modulus: &[u64; 32]) -> [u64; 32] 
     for i in 0..32 {
         let mut carry = 0u64;
         for j in 0..32 {
-            let mut t = product[i + j] as u128 + (a[i] as u128 * b[j] as u128) + carry as u128;
+            let t = product[i + j] as u128 + (a[i] as u128 * b[j] as u128) + carry as u128;
             product[i + j] = t as u64;
             carry = (t >> 64) as u64;
         }
@@ -144,18 +145,12 @@ fn multiply_mod(a: &[u64; 32], b: &[u64; 32], modulus: &[u64; 32]) -> [u64; 32] 
     
     // Perform modular reduction (simplified)
     // This is a basic approach - real implementation would use optimized reduction
-    let mut result = [0u64; 32];
-    let mut remainder = [0u64; 64];
-    
-    for i in 0..64 {
-        remainder[i] = product[i];
-    }
+    let mut remainder = product;
     
     for i in (32..64).rev() {
-        let mut q = 0u64;
         if remainder[i] != 0 {
             // Find approximate quotient
-            q = remainder[i];
+            let q = remainder[i];
             
             // Subtract q * modulus from remainder (shifted by i-32 positions)
             let mut borrow = 0i128;
@@ -170,9 +165,7 @@ fn multiply_mod(a: &[u64; 32], b: &[u64; 32], modulus: &[u64; 32]) -> [u64; 32] 
     }
     
     // Copy lower 32 limbs as result
-    for i in 0..32 {
-        result[i] = remainder[i];
-    }
+    let mut result = remainder[..32].try_into().unwrap();
     
     // Ensure result is less than modulus
     while compare_ge(&result, modulus) {
@@ -190,10 +183,10 @@ fn multiply_mod(a: &[u64; 32], b: &[u64; 32], modulus: &[u64; 32]) -> [u64; 32] 
 
 fn compare_ge(a: &[u64; 32], b: &[u64; 32]) -> bool {
     for i in (0..32).rev() {
-        if a[i] > b[i] {
-            return true;
-        } else if a[i] < b[i] {
-            return false;
+        match a[i].cmp(&b[i]) {
+            Ordering::Greater => return true,
+            Ordering::Less => return false,
+            Ordering::Equal => continue,
         }
     }
     true // Equal is also greater-or-equal
@@ -210,9 +203,7 @@ fn main() {
     
     // RSA data
     let mut rsa_modulus = [0u64; 32];
-    for i in 0..32 {
-        rsa_modulus[i] = read::<u64>();
-    }
+    rsa_modulus.iter_mut().for_each(|val| *val = read::<u64>());
     let rsa_exponent: u32 = read(); // Should be 65537 (0x10001)
     
     // Ephemeral data
