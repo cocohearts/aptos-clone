@@ -4,7 +4,7 @@ use openvm::io::{read, reveal_u32};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use openvm_sha256_guest::sha256;
-use crypto_bigint::{U256, U2048, U4096, NonZero};
+use crypto_bigint::{U2048, U4096, NonZero};
 use crypto_bigint::Encoding;
 
 // Helper: decode Base64URL (with '-'→'+', '_'→'/', padding)
@@ -136,21 +136,26 @@ fn main() {
     let rsa_exponent: u32 = read(); // Should be 65537 (0x10001)
     
     // Ephemeral data
-    let eph_pk_high = read::<u128>();
-    let eph_pk_low = read::<u128>();
-    let eph_pk = U256::from_words([eph_pk_low as u64, (eph_pk_low >> 64) as u64, 
-                                   eph_pk_high as u64, (eph_pk_high >> 64) as u64]);
+    // Helper function to read a U256 value from input
+    fn read_u256_bytes() -> [u8; 32] {
+        let mut bytes = [0u8; 32];
+        
+        for i in 0..4 {
+            let mut word = read::<u64>();
+            
+            // Extract 8 bytes from the u64 using modulo, in big-endian order
+            for j in 0..8 {
+                // For big-endian, place bytes from end to start
+                bytes[i * 8 + 7 - j] = (word % 256) as u8;
+                word /= 256;
+            }
+        }
+        bytes
+    }
     
-    let eph_rand_high = read::<u128>();
-    let eph_rand_low = read::<u128>();
-    let eph_rand = U256::from_words([eph_rand_low as u64, (eph_rand_low >> 64) as u64,
-                                     eph_rand_high as u64, (eph_rand_high >> 64) as u64]);
-
-    let pepper_high = read::<u128>();
-    let pepper_low = read::<u128>();
-    let pepper = U256::from_words([pepper_low as u64, (pepper_low >> 64) as u64,
-                                   pepper_high as u64, (pepper_high >> 64) as u64]);
-    let pepper_bytes = pepper.to_be_bytes();
+    let eph_pk = read_u256_bytes();
+    let eph_rand = read_u256_bytes();
+    let pepper = read_u256_bytes();
     
     let epoch: u64 = read();
     
@@ -205,12 +210,12 @@ fn main() {
     let nonce_raw = get_json_value(payload_json, "nonce");
     assert!(nonce_raw.starts_with('"') && nonce_raw.ends_with('"'), "nonce not string");
     let nonce_bytes = base64_url_decode(&nonce_raw[1..nonce_raw.len()-1]);
-    let nonce_data = [&eph_pk.to_be_bytes()[..], &eph_rand.to_be_bytes()[..]].concat();
+    let nonce_data = [&eph_pk[..], &eph_rand[..]].concat();
     let nonce_hash = sha256(&nonce_data);
     assert!(nonce_hash.as_slice() == nonce_bytes.as_slice(), "nonce mismatch");
 
     // --- addr_seed & public_inputs_hash ---
-    let pkey_data = [&uid[..], &aud[..], &pepper_bytes[..]].concat();
+    let pkey_data = [&uid[..], &aud[..], &pepper[..]].concat();
     let pkey = sha256(&pkey_data);
     // Convert the SHA-256 hash (32 bytes) to [u32; 8]
     let mut pkey_u32 = [0u32; 8];
