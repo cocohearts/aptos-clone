@@ -8,3 +8,4 @@ openvm = { git = "https://github.com/openvm-org/openvm.git", features = ["std"] 
 openvm-sha256-guest = { git = "https://github.com/openvm-org/openvm.git" }
 hex = { version = "0.4.3", default-features = false, features = ["alloc"] }
 base64 = "0.21.0"
+crypto-bigint = "0.5.3"

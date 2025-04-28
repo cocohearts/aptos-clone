@@ -21,12 +21,8 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use openvm_sha256_guest::sha256;
 use core::cmp::Ordering;
-
-// Pair for representing u256 as [high, low]
-struct Pair<T> {
-    high: T,
-    low: T,
-}
+use crypto_bigint::{U256, U512, U2048, U4096, Limb, NonZero, Integer, MulMod, AddMod, Uint};
+use crypto_bigint::Encoding;
 
 // Helper: decode Base64URL (with '-'→'+', '_'→'/', padding)
 fn base64_url_decode(s: &str) -> Vec<u8> {
@@ -58,38 +54,48 @@ fn get_json_value<'a>(json: &'a str, key: &str) -> &'a str {
     }
 }
 
-// Enhanced RSA modular exponentiation for 2048-bit numbers (32 limbs)
-fn rsa_verify_complete(sig: &[u8], modulus: &[u64; 32], exponent: u32, message_hash: &[u8]) -> bool {
-    // Convert signature to big integer representation
-    let mut sig_val = [0u64; 32];
-    for i in 0..sig.len().min(256) {
-        let limb_idx = i / 8;
-        let byte_pos = i % 8;
-        sig_val[limb_idx] |= (sig[sig.len() - 1 - i] as u64) << (byte_pos * 8);
+// Enhanced RSA modular exponentiation for 2048-bit numbers using crypto-bigint
+fn rsa_verify_complete(sig: &[u8], exponent: u32, message_hash: &[u8]) -> bool {
+    // Hardcoded RSA modulus (2048-bit) - this would normally come from a certificate
+    // Convert our array of 32 u64 values into a U2048
+    let modulus_array = [
+        0x3515, 0x8092, 0x4290, 0x6848, 0x9261, 0x9735, 0x9613, 0x4573,
+        0x9861, 0x7519, 0x9509, 0x6805, 0x1224, 0x7147, 0x3058, 0x6148,
+        0x1061, 0x3028, 0x9059, 0x3137, 0x0501, 0x9293, 0x8982, 0x2229,
+        0x9105, 0x3169, 0x4422, 0x0690, 0x0624, 0x9151, 0x6422, 0x7906,
+    ];
+    
+    // Convert the array to bytes in big-endian format
+    let mut modulus_bytes = [0u8; 256];
+    for (i, &value) in modulus_array.iter().enumerate() {
+        let byte_idx = 255 - i * 8;
+        for j in 0..8 {
+            modulus_bytes[byte_idx - j] = ((value as u64 >> (8 * (7 - j))) & 0xFF) as u8;
+        }
     }
+    
+    // Create U2048 from byte arrays
+    let modulus = U2048::from_be_slice(&modulus_bytes);
+    
+    // Convert signature to U2048
+    // let mut sig_bytes = [0u8; 512];
+    // let offset = 512 - sig.len();
+    // sig_bytes[offset..].copy_from_slice(sig);
+    // let sig_val = U4096::from_be_slice(&sig_bytes);
+    // Convert signature to U2048
+    let mut sig_bytes = [0u8; 256];
+    let offset = 256 - sig.len();
+    sig_bytes[offset..].copy_from_slice(sig);
+    let sig_val = U2048::from_be_slice(&sig_bytes);
+    
+    // Verify exponent is 65537
     assert!(exponent == 65537, "Invalid exponent");
     
-    // Implement full modular exponentiation for large integers
-    // This is a simplified approach - in production, use a dedicated big integer library
-    let mut result = [0u64; 32];
-    result[0] = 1; // Set to 1
+    // Create non-zero modulus for modular exponentiation
+    let non_zero_modulus = NonZero::new(modulus).expect("Modulus cannot be zero");
     
-    // For each bit in the exponent (65537 = 10000000000000001 in binary)
-    // We can optimize for e=65537 by performing 16 squarings and 1 multiplication
-    
-    // Store sig_val for squaring operations
-    let mut base = sig_val;
-    
-    // First, handle the least significant bit (which is 1 for e=65537)
-    result = base;
-    
-    // Perform 16 squarings to handle the upper bit
-    for _ in 0..16 {
-        base = square_mod(&base, modulus);
-    }
-    
-    // Multiply result by the final square to complete exponentiation
-    result = multiply_mod(&result, &base, modulus);
+    // Implement modular exponentiation with fixed exponent 65537
+    let result = mod_65537(&sig_val, &non_zero_modulus);
     
     // Build expected PKCS#1 v1.5 padded digest
     let der_prefix: [u8; 19] = [
@@ -108,88 +114,35 @@ fn rsa_verify_complete(sig: &[u8], modulus: &[u64; 32], exponent: u32, message_h
     expected.extend_from_slice(message_hash);
     
     // Convert result to bytes and compare
-    let mut result_bytes = [0u8; 256];
-    for (i, limb) in result.iter().enumerate() {
-        for j in 0..8 {
-            let byte_idx = i * 8 + j;
-            if byte_idx < 256 {
-                result_bytes[255 - byte_idx] = ((limb >> (j * 8)) & 0xFF) as u8;
-            }
-        }
-    }
+    let result_bytes = result.to_be_bytes();
     
     // Compare the expected PKCS1v15 padded hash with our decrypted result
     expected.as_slice() == &result_bytes[..]
 }
 
-fn square_mod(base: &[u64; 32], modulus: &[u64; 32]) -> [u64; 32] {
-    multiply_mod(base, base, modulus)
-}
-
-fn multiply_mod(a: &[u64; 32], b: &[u64; 32], modulus: &[u64; 32]) -> [u64; 32] {
-    // Simplified modular multiplication
-    // In a real implementation, use a proper big integer library
+// Implementation of modular exponentiation with fixed exponent 65537
+fn mod_65537(base: &U2048, modulus: &NonZero<U2048>) -> U2048 {
+    // Implement b^65537 mod n
+    // 65537 = 2^16 + 1 in binary: 10000000000000001
     
-    // Perform schoolbook multiplication
-    let mut product = [0u64; 64]; // Twice the limbs for full product
+    // Initial value: base mod modulus
+    let mut result = base.clone().rem(modulus);
+    let big_modulus = U4096::from_be_slice(&modulus.as_ref().to_be_bytes());
+    let big_modulus_non_zero = NonZero::new(big_modulus).expect("Big modulus cannot be zero");
     
-    for i in 0..32 {
-        let mut carry = 0u64;
-        for j in 0..32 {
-            let t = product[i + j] as u128 + (a[i] as u128 * b[j] as u128) + carry as u128;
-            product[i + j] = t as u64;
-            carry = (t >> 64) as u64;
-        }
-        product[i + 32] = carry;
+    // Store original value for the final multiplication
+    let base_mod = result;
+    
+    // Square 16 times (for 2^16)
+    for _ in 0..16 {
+        // Square (multiply by itself) and reduce
+        let result1: U4096 = (result).mul(&result);
+        result = U2048::from_be_slice(&result1.rem(&big_modulus_non_zero).to_be_bytes()[32..]);
     }
     
-    // Perform modular reduction (simplified)
-    // This is a basic approach - real implementation would use optimized reduction
-    let mut remainder = product;
-    
-    for i in (32..64).rev() {
-        if remainder[i] != 0 {
-            // Find approximate quotient
-            let q = remainder[i];
-            
-            // Subtract q * modulus from remainder (shifted by i-32 positions)
-            let mut borrow = 0i128;
-            for j in 0..32 {
-                if i - 32 + j < 64 {
-                    let t = remainder[i - 32 + j] as i128 - (q as i128 * modulus[j] as i128) - borrow;
-                    remainder[i - 32 + j] = t as u64;
-                    borrow = if t < 0 { 1 } else { 0 };
-                }
-            }
-        }
-    }
-    
-    // Copy lower 32 limbs as result
-    let mut result = remainder[..32].try_into().unwrap();
-    
-    // Ensure result is less than modulus
-    while compare_ge(&result, modulus) {
-        // Subtract modulus from result
-        let mut borrow = 0i128;
-        for i in 0..32 {
-            let t = result[i] as i128 - modulus[i] as i128 - borrow;
-            result[i] = t as u64;
-            borrow = if t < 0 { 1 } else { 0 };
-        }
-    }
-    
-    result
-}
-
-fn compare_ge(a: &[u64; 32], b: &[u64; 32]) -> bool {
-    for i in (0..32).rev() {
-        match a[i].cmp(&b[i]) {
-            Ordering::Greater => return true,
-            Ordering::Less => return false,
-            Ordering::Equal => continue,
-        }
-    }
-    true // Equal is also greater-or-equal
+    // Final multiply: result * base_mod mod modulus (for the +1 in 2^16+1)
+    let final_mul: U4096 = (result).mul(&base_mod);
+    U2048::from_be_slice(&final_mul.rem(&big_modulus_non_zero).to_be_bytes()[32..])
 }
 
 fn main() {
@@ -202,20 +155,18 @@ fn main() {
     }
     
     // RSA data
-    let mut rsa_modulus = [0u64; 32];
-    rsa_modulus.iter_mut().for_each(|val| *val = read::<u64>());
     let rsa_exponent: u32 = read(); // Should be 65537 (0x10001)
     
     // Ephemeral data
-    let eph_pk = Pair {
-        high: read::<u128>(),
-        low: read::<u128>(),
-    };
+    let eph_pk_high = read::<u128>();
+    let eph_pk_low = read::<u128>();
+    let eph_pk = U256::from_words([eph_pk_low as u64, (eph_pk_low >> 64) as u64, 
+                                   eph_pk_high as u64, (eph_pk_high >> 64) as u64]);
     
-    let eph_rand = Pair {
-        high: read::<u128>(),
-        low: read::<u128>(),
-    };
+    let eph_rand_high = read::<u128>();
+    let eph_rand_low = read::<u128>();
+    let eph_rand = U256::from_words([eph_rand_low as u64, (eph_rand_low >> 64) as u64,
+                                     eph_rand_high as u64, (eph_rand_high >> 64) as u64]);
     
     let epoch: u64 = read();
     
@@ -235,11 +186,11 @@ fn main() {
     let payload_json = core::str::from_utf8(&payload_bytes).expect("Bad payload UTF-8");
 
     // --- RSA signature (RS256) verification ---
-    // Compute SHA256(signed_data)
+    // Compute SHA256(header.payload)
     let hash = sha256(signed_data.as_bytes());
 
-    // Use enhanced RSA verification with full modulus
-    let sig_valid = rsa_verify_complete(&sig_bytes, &rsa_modulus, rsa_exponent, &hash);
+    // Use RSA verification with built-in modulus
+    let sig_valid = rsa_verify_complete(&sig_bytes, rsa_exponent, &hash);
     assert!(sig_valid, "RSA signature verification failed");
 
     // --- JSON structural checks ---
@@ -292,11 +243,9 @@ fn main() {
     
     // Convert to bytes and hash with sha256
     let mut to_hash = Vec::new();
-    to_hash.extend_from_slice(&eph_pk.high.to_le_bytes());
-    to_hash.extend_from_slice(&eph_pk.low.to_le_bytes());
+    to_hash.extend_from_slice(&eph_pk.to_be_bytes());
     to_hash.extend_from_slice(&epoch.to_le_bytes());
-    to_hash.extend_from_slice(&eph_rand.high.to_le_bytes());
-    to_hash.extend_from_slice(&eph_rand.low.to_le_bytes());
+    to_hash.extend_from_slice(&eph_rand.to_be_bytes());
     let nonce_hash = sha256(&to_hash);
 
     // Compare hash bytes directly
