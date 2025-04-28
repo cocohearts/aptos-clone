@@ -166,6 +166,11 @@ fn main() {
     let eph_rand_low = read::<u128>();
     let eph_rand = U256::from_words([eph_rand_low as u64, (eph_rand_low >> 64) as u64,
                                      eph_rand_high as u64, (eph_rand_high >> 64) as u64]);
+
+    let pepper_high = read::<u128>();
+    let pepper_low = read::<u128>();
+    let pepper = U256::from_words([pepper_low as u64, (pepper_low >> 64) as u64,
+                                   pepper_high as u64, (pepper_high >> 64) as u64]);
     
     let epoch: u64 = read();
     
@@ -180,9 +185,7 @@ fn main() {
 
     // Split header.payload → decode payload JSON
     let dot1 = signed_data.find('.').expect("Missing payload '.'");
-    let payload_b64 = &signed_data[dot1+1..];
-    let payload_bytes = base64_url_decode(payload_b64);
-    let payload_json = core::str::from_utf8(&payload_bytes).expect("Bad payload UTF-8");
+    let payload_json = &signed_data[dot1+1..];
 
     // --- RSA signature (RS256) verification ---
     // Compute SHA256(header.payload)
@@ -206,7 +209,6 @@ fn main() {
     // iss
     let iss_raw = get_json_value(payload_json, "iss");
     assert!(iss_raw.starts_with('"') && iss_raw.ends_with('"'), "iss not string");
-    let iss = &iss_raw[1..iss_raw.len()-1];
 
     // uid
     let uid_raw = get_json_value(payload_json, "sub");
@@ -217,55 +219,38 @@ fn main() {
         str_to_bytes(uid_raw)
     };
 
-    // iat
+    // Verify that iat is not too far from current epoch
     let iat: u64 = get_json_value(payload_json, "iat").parse().expect("iat not number");
-
-    // nonce
-    let nonce_raw = get_json_value(payload_json, "nonce");
-    assert!(nonce_raw.starts_with('"') && nonce_raw.ends_with('"'), "nonce not string");
-    let nonce_str = &nonce_raw[1..nonce_raw.len()-1];
-    let nonce_bytes = base64_url_decode(nonce_str);
+    const MAX_JWT_AGE_SECONDS: u64 = 86400; // 24 hours
+    let time_diff = if epoch > iat { epoch - iat } else { iat - epoch };
+    assert!(time_diff <= MAX_JWT_AGE_SECONDS, "JWT is too old or from the future");
 
     // email_verified
     let ev = get_json_value(payload_json, "email_verified");
     assert!(ev == "True", "email_verified must be true");
 
-    // extra
-    let extra = get_json_value(payload_json, "extra");
-    assert!(!extra.starts_with('{') && !extra.starts_with('['), "extra must be primitive");
-
     // --- Nonce hash check ---
-    // Verify that iat is not too far from current epoch
-    const MAX_JWT_AGE_SECONDS: u64 = 86400; // 24 hours
-    let time_diff = if epoch > iat { epoch - iat } else { iat - epoch };
-    assert!(time_diff <= MAX_JWT_AGE_SECONDS, "JWT is too old or from the future");
-    
+    let nonce_raw = get_json_value(payload_json, "nonce");
+    assert!(nonce_raw.starts_with('"') && nonce_raw.ends_with('"'), "nonce not string");
+    let nonce_bytes = base64_url_decode(&nonce_raw[1..nonce_raw.len()-1]);
     // Convert to bytes and hash with sha256
     let mut to_hash = Vec::new();
     to_hash.extend_from_slice(&eph_pk.to_be_bytes());
-    to_hash.extend_from_slice(&epoch.to_le_bytes());
     to_hash.extend_from_slice(&eph_rand.to_be_bytes());
     let nonce_hash = sha256(&to_hash);
-
     // Compare hash bytes directly
     assert!(nonce_hash.as_slice() == nonce_bytes.as_slice(), "nonce mismatch");
 
     // --- addr_seed & public_inputs_hash ---
-    // hash aud, iss into field elems
-    let aud_h = sha256(&aud);
-    let iss_h = sha256(iss.as_bytes());
-    
-    // Combine and hash for addr_seed
     let mut addr_seed_data = Vec::new();
     addr_seed_data.extend_from_slice(&uid);
-    addr_seed_data.extend_from_slice(&aud_h);
-    addr_seed_data.extend_from_slice(&iss_h);
+    addr_seed_data.extend_from_slice(&aud);
+    addr_seed_data.extend_from_slice(&pepper.to_be_bytes());
     let addr_seed = sha256(&addr_seed_data);
     
     // Combine and hash for public inputs
     let mut public_inputs_data = Vec::new();
-    public_inputs_data.extend_from_slice(&iss_h);
-    public_inputs_data.extend_from_slice(&aud_h);
+    public_inputs_data.extend_from_slice(&addr_seed);
     let pub_inputs = sha256(&public_inputs_data);
 
     // reveal public_inputs_hash (4 chunks)
