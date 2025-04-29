@@ -2,14 +2,15 @@
 name = "aptos-clone"
 version = "0.1.0"
 edition = "2024"
+edition = "2024"
 
-[[bin]]
-name = "gen_nonce"
-path = "src/gen_nonce.rs"
+#[[bin]]
+#name = "gen_nonce"
+#path = "src/gen_nonce.rs"
 
-[[bin]]
-name = "gen_inputs"
-path = "src/gen_inputs.rs"
+#[[bin]]
+#name = "gen_inputs"
+#path = "src/gen_inputs.rs"
 
 [dependencies]
 openvm = { git = "https://github.com/openvm-org/openvm.git", features = ["std"] }
@@ -20,3 +21,8 @@ rand = "0.8.5"
 base64 = "0.21.0"
 serde_json = "1.0"
 crypto-bigint = "0.5"
+#[lib]
+#crate-type = ["cdylib"]
+
+#[package.metadata.openvm]
+#program = "app"  # or the name you want

@@ -1,4 +1,7 @@
 // src/main.rs
+//#![no_std]
+//#![no_main]
+
 use std::vec::Vec;
 use openvm::io::{read, reveal_u32, println};
 use base64::Engine;
