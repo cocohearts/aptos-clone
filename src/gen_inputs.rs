@@ -36,20 +36,28 @@ fn get_json_value<'a>(json: &'a str, key: &str) -> Option<&'a str> {
 
 // Helper: format an integer as hex with 0x01 prefix
 // Handles different integer sizes based on the actual type
-fn format_as_hex<T: Into<u128> + Copy>(value: T) -> String {
+fn format_as_hex(value: u64) -> String {
     use std::mem::size_of;
     
-    // Get the byte size from the type itself
-    let byte_size = size_of::<T>();
-    let value_u128: u128 = value.into();
+    // Always use 8 bytes (64 bits) for consistency
+    let byte_size = 8;
     
-    // Format directly to hex
-    let hex = format!("{:0width$x}", value_u128, width = byte_size * 2);
+    // Convert to byte array in little-endian order
+    let mut bytes = Vec::with_capacity(byte_size);
+    let mut remaining = value;
     
-    // Collect bytes (pairs of hex characters) and reverse their order
-    let reversed = hex.chars().rev().collect::<Vec<_>>();
-    let reversed_str: String = reversed.iter().collect();
-    format!("0x01{}", reversed_str)
+    for _ in 0..byte_size {
+        bytes.push((remaining & 0xFF) as u8);
+        remaining >>= 8;
+    }
+    
+    // Format byte array as hex string
+    let hex = bytes.iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<Vec<_>>()
+        .join("");
+    
+    format!("0x01{}", hex)
 }
 
 fn main() -> io::Result<()> {
@@ -158,23 +166,23 @@ fn main() -> io::Result<()> {
 
     // 2. JWT bytes (as u8s)
     for &byte in jwt_bytes {
-        input_array.push(format_as_hex(byte));
+        input_array.push(format_as_hex(byte as u64));
     }
     
     // 3. RSA exponent (65537)
     // Convert 65537 (0x10001) to little-endian bytes and format
     let exponent: u32 = 65537;
-    input_array.push(format_as_hex(exponent));
+    input_array.push(format_as_hex(exponent as u64));
     
     // 4. Ephemeral values (eph_pk, eph_rand, pepper)
     // Each is 64 bytes, written as 2 u128s in little-endian format
     for buffer in [&eph_pk, &eph_rand, &pepper] {
-        for i in 0..2 {
-            let mut u128_val: u128 = 0;
-            for j in 0..16 {
-                u128_val |= (buffer[i*16 + j] as u128) << (j * 8);
+        for i in 0..4 {
+            let mut u64_val: u64 = 0;
+            for j in 0..8 {
+                u64_val |= (buffer[i*8 + j] as u64) << (j * 8);
             }
-            input_array.push(format_as_hex(u128_val));
+            input_array.push(format_as_hex(u64_val));
         }
     }
     

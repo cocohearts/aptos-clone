@@ -1,6 +1,6 @@
 // src/main.rs
 use std::vec::Vec;
-use openvm::io::{read, reveal_u32};
+use openvm::io::{read, reveal_u32, println};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use openvm_sha256_guest::sha256;
@@ -126,28 +126,32 @@ fn mod_65537(base: &U2048, modulus: &NonZero<U2048>) -> U2048 {
 fn main() {
     // Read all inputs first
     // JWT data
-    let jwt_len: u64 = read();
+    let jwt_len: u64 = read::<u64>();
+    println(jwt_len.to_string());
     println!("JWT length: {}", jwt_len);
     let mut jwt_bytes = Vec::with_capacity(jwt_len as usize);
-    for _ in 0..jwt_len {
+    for i in 0..jwt_len {
+        println("getting byte");
         jwt_bytes.push(read::<u8>());
+        println(jwt_bytes[i as usize].to_string());
     }
     
     // RSA data
-    let rsa_exponent: u32 = read(); // Should be 65537 (0x10001)
-    
+    println("RSA exponent: ");
+    let rsa_exponent: u32 = read::<u32>(); // Should be 65537 (0x10001)
+    println!("RSA exponent: {}", rsa_exponent);
     // Ephemeral data
     // Helper function to read a U256 value from input
     fn read_u256_bytes() -> [u8; 32] {
         let mut bytes = [0u8; 32];
         
-        for i in 0..2 {
-            let mut word = read::<u128>();
+        for i in 0..4 {
+            let mut word = read::<u64>();
             
-            // Extract 16 bytes from the u128 using modulo, in big-endian order
-            for j in 0..16 {
+            // Extract 8 bytes from the u64 using modulo, in big-endian order
+            for j in 0..8 {
                 // For big-endian, place bytes from end to start
-                bytes[i * 16 + 15 - j] = (word % 256) as u8;
+                bytes[i * 8 + j] = (word % 256) as u8;
                 word /= 256;
             }
         }
@@ -155,16 +159,20 @@ fn main() {
     }
     
     let eph_pk = read_u256_bytes();
+    println(STANDARD.encode(eph_pk));
     let eph_rand = read_u256_bytes();
+    println(STANDARD.encode(eph_rand));
     let pepper = read_u256_bytes();
+    println(STANDARD.encode(pepper));
     
-    let epoch: u64 = read();
-    
+    let epoch: u64 = read::<u64>();
+    println(epoch.to_string());
+
     // Process JWT
     let jwt_str = core::str::from_utf8(&jwt_bytes).expect("Invalid UTF-8 JWT");
     // Split off signature (base64url)
     // Print the JWT string for debugging
-    println!("JWT: {}", jwt_str);
+    println(jwt_str);
     let dot2 = jwt_str.rfind('.').expect("Missing signature '.'");
     let signed_data = &jwt_str[..dot2];
     let sig_b64 = &jwt_str[dot2+1..];
