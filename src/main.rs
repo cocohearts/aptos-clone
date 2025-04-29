@@ -136,19 +136,17 @@ fn main() {
     // Read all inputs first
     // JWT data
     let jwt_len: u64 = read::<u64>();
+    println("JWT length: ");
     println(jwt_len.to_string());
-    println!("JWT length: {}", jwt_len);
     let mut jwt_bytes = Vec::with_capacity(jwt_len as usize);
-    for i in 0..jwt_len {
-        println("getting byte");
+    for _ in 0..jwt_len {
         jwt_bytes.push(read::<u8>());
-        println(jwt_bytes[i as usize].to_string());
     }
     
     // RSA data
     println("RSA exponent: ");
     let rsa_exponent: u32 = read::<u32>(); // Should be 65537 (0x10001)
-    println!("RSA exponent: {}", rsa_exponent);
+    println(rsa_exponent.to_string());
     // Ephemeral data
     // Helper function to read a U256 value from input
     fn read_u256_bytes() -> [u8; 32] {
@@ -228,7 +226,7 @@ fn main() {
     assert!(time_diff <= MAX_JWT_AGE_SECONDS, "JWT is too old or from the future");
     // email_verified
     let ev = get_json_value(&payload_str, "email_verified");
-    assert!(ev == "True", "email_verified must be true");
+    assert!(ev == "true", "email_verified must be true");
 
     // --- RSA signature (RS256) verification ---
     // Compute SHA256(header.payload)
