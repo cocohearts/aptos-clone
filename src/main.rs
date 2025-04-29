@@ -15,13 +15,7 @@ fn base64_url_decode(s: &str) -> Vec<u8> {
     let mut b64 = s.replace('-', "+").replace('_', "/");
     let pad = (4 - b64.len() % 4) % 4;
     for _ in 0..pad { b64.push('='); }
-    let bytes = STANDARD.decode(&b64).expect("Invalid Base64URL");
-    bytes
-}
-
-fn base64_url_encode(s: &[u8]) -> String {
-    let b64 = STANDARD.encode(s);
-    b64.replace('+', "-").replace('/', "_")
+    STANDARD.decode(&b64).expect("Invalid Base64URL")
 }
 
 // Helper: decimal string → byte array
@@ -205,14 +199,14 @@ fn main() {
     assert!(!payload_str.contains('['), "Arrays disallowed");
     // --- Extract & validate each field ---
     // aud
-    let aud_raw = get_json_value(&payload_str, "aud");
+    let aud_raw = get_json_value(payload_str, "aud");
     assert!(aud_raw.starts_with('"') && aud_raw.ends_with('"'), "aud not string");
     let aud = str_to_bytes(&aud_raw[1..aud_raw.len()-1]);
     // iss
-    let iss_raw = get_json_value(&payload_str, "iss");
+    let iss_raw = get_json_value(payload_str, "iss");
     assert!(iss_raw.starts_with('"') && iss_raw.ends_with('"'), "iss not string");
     // uid
-    let uid_raw = get_json_value(&payload_str, "sub");
+    let uid_raw = get_json_value(payload_str, "sub");
     let uid = if uid_raw.starts_with('"') {
         assert!(uid_raw.ends_with('"'), "uid not string");
         str_to_bytes(&uid_raw[1..uid_raw.len()-1])
@@ -220,12 +214,12 @@ fn main() {
         str_to_bytes(uid_raw)
     };
     // Verify that iat is not too far from current epoch
-    let iat: u64 = get_json_value(&payload_str, "iat").parse().expect("iat not number");
+    let iat: u64 = get_json_value(payload_str, "iat").parse().expect("iat not number");
     const MAX_JWT_AGE_SECONDS: u64 = 86400; // 24 hours
     let time_diff = if epoch > iat { epoch - iat } else { iat - epoch };
     assert!(time_diff <= MAX_JWT_AGE_SECONDS, "JWT is too old or from the future");
     // email_verified
-    let ev = get_json_value(&payload_str, "email_verified");
+    let ev = get_json_value(payload_str, "email_verified");
     assert!(ev == "true", "email_verified must be true");
 
     // --- RSA signature (RS256) verification ---
@@ -236,7 +230,7 @@ fn main() {
     assert!(sig_valid, "RSA signature verification failed");
 
     // --- Nonce hash check ---
-    let nonce_raw = get_json_value(&payload_str, "nonce");
+    let nonce_raw = get_json_value(payload_str, "nonce");
     assert!(nonce_raw.starts_with('"') && nonce_raw.ends_with('"'), "nonce not string");
     let nonce_bytes = base64_url_decode(&nonce_raw[1..nonce_raw.len()-1]);
     let nonce_data = [&eph_pk[..], &eph_rand[..]].concat();
