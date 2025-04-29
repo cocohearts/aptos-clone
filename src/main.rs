@@ -1,6 +1,4 @@
 // src/main.rs
-//#![no_std]
-//#![no_main]
 
 use std::vec::Vec;
 use openvm::io::{read, reveal_u32, println};
@@ -41,27 +39,33 @@ fn get_json_value<'a>(json: &'a str, key: &str) -> &'a str {
 }
 
 // Enhanced RSA modular exponentiation for 2048-bit numbers using crypto-bigint
-fn rsa_verify_complete(sig: &[u8], exponent: u32, message_hash: &[u8]) -> bool {
-    // Hardcoded RSA modulus (2048-bit) - this would normally come from a certificate
-    // Convert our array of 32 u64 values into a U2048
-    let modulus_array = [
-        0x3515, 0x8092, 0x4290, 0x6848, 0x9261, 0x9735, 0x9613, 0x4573,
-        0x9861, 0x7519, 0x9509, 0x6805, 0x1224, 0x7147, 0x3058, 0x6148,
-        0x1061, 0x3028, 0x9059, 0x3137, 0x0501, 0x9293, 0x8982, 0x2229,
-        0x9105, 0x3169, 0x4422, 0x0690, 0x0624, 0x9151, 0x6422, 0x7906,
-    ];
+fn rsa_verify_complete(sig: &[u8], exponent: u32, message_hash: &[u8], kid: &str) -> bool {
+    // Validate kid is one of the supported key IDs
+    assert!(
+        kid == "23f7a3583796f97129e5418f9b2136fcc0a96462" || 
+        kid == "07b80a365428525f8bf7cd0846d74a8ee4ef3625",
+        "Unsupported key ID (kid)"
+    );
     
-    // Convert the array to bytes in big-endian format
-    let mut modulus_bytes = [0u8; 256];
-    for (i, &value) in modulus_array.iter().enumerate() {
-        let byte_idx = 255 - i * 8;
-        for j in 0..8 {
-            modulus_bytes[byte_idx - j] = ((value as u64 >> (8 * (7 - j))) & 0xFF) as u8;
-        }
-    }
+    // Map kid to the corresponding modulus
+    let modulus_base64 = if kid == "23f7a3583796f97129e5418f9b2136fcc0a96462" {
+        "jb7Wtq9aDMpiXvHGCB5nrfAS2UutDEkSbK16aDtDhbYJhDWhd7vqWhFbnP0C_XkSxsqWJoku69y49EzgabEiUMf0q3X5N0pNvV64krviH2m9uLnyGP5GMdwZpjTXARK9usGgYZGuWhjfgTTvooKDUdqVQYvbrmXlblkM6xjbA8GnShSaOZ4AtMJCjWnaN_UaMD_vAXvOYj4SaefDMSlSoiI46yipFdggfoIV8RDg1jeffyre_8DwOWsGz7b2yQrL7grhYCvoiPrybKmViXqu-17LTIgBw6TDk8EzKdKzm33_LvxU7AKs3XWW_NvZ4WCPwp4gr7uw6RAkdDX_ZAn0TQ"
+    } else {
+        "03Cww27F2O7JxB5Ji9iT9szfKZ4MK-iPzVpQkdLjCuGKfpjaCVAz9zIQ0-7gbZ-8cJRaSLfByWTGMIHRYiX2efdjz1Z9jck0DK9W3mapFrBPvM7AlRni4lPlwUigDd8zxAMDCheqyK3vCOLFW-1xYHt_YGwv8b0dP7rjujarEYlWjeppO_QMNtXdKdT9eZtBEcj_9ms9W0aLdCFNR5AAR3y0kLkKR1H4DW7vncB46rqCJLenhlCbcW0MZ3asqcjqBQ2t9QMRnY83Zf_pNEsCcXlKp4uOQqEvzjAc9ZSr2sOmd_ESZ_3jMlNkCZ4J41TuG-My5illFcW5LajSKvxD3w"
+    };
+    
+    // Decode the Base64URL encoded modulus
+    let modulus_bytes = base64_url_decode(modulus_base64);
+    println("Modulus bytes length: ");
+    println(modulus_bytes.len().to_string());
     
     // Create U2048 from byte arrays
-    let modulus = U2048::from_be_slice(&modulus_bytes);
+    let mut padded_modulus = [0u8; 256];
+    let offset = 256 - modulus_bytes.len();
+    padded_modulus[offset..].copy_from_slice(&modulus_bytes);
+    let modulus = U2048::from_be_slice(&padded_modulus);
+    println("Modulus loaded for kid: ");
+    println(kid);
     
     // Convert signature to U2048
     let mut sig_bytes = [0u8; 256];
@@ -71,13 +75,14 @@ fn rsa_verify_complete(sig: &[u8], exponent: u32, message_hash: &[u8]) -> bool {
     
     // Verify exponent is 65537
     assert!(exponent == 65537, "Invalid exponent");
+    println("Exponent verified");
     
     // Create non-zero modulus for modular exponentiation
     let non_zero_modulus = NonZero::new(modulus).expect("Modulus cannot be zero");
     
     // Implement modular exponentiation with fixed exponent 65537
     let result = mod_65537(&sig_val, &non_zero_modulus);
-    
+    println("Result calculated");
     // Build expected PKCS#1 v1.5 padded digest
     let der_prefix: [u8; 19] = [
         0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01,
@@ -93,7 +98,7 @@ fn rsa_verify_complete(sig: &[u8], exponent: u32, message_hash: &[u8]) -> bool {
     expected.push(0x00);
     expected.extend_from_slice(&der_prefix);
     expected.extend_from_slice(message_hash);
-    
+    println("Expected padded message calculated");
     // Convert result to bytes and compare
     let result_bytes = result.to_be_bytes();
     
@@ -108,7 +113,14 @@ fn mod_65537(base: &U2048, modulus: &NonZero<U2048>) -> U2048 {
     
     // Initial value: base mod modulus
     let mut result = base.clone().rem(modulus);
-    let big_modulus = U4096::from_be_slice(&modulus.as_ref().to_be_bytes());
+    println("Result calculated");
+    // Pad the modulus bytes to 512 bytes (4096 bits) for U4096
+    let mut padded_modulus = [0u8; 512];
+    let modulus_bytes = modulus.as_ref().to_be_bytes();
+    let offset = 512 - modulus_bytes.len();
+    padded_modulus[offset..].copy_from_slice(&modulus_bytes);
+    let big_modulus = U4096::from_be_slice(&padded_modulus);
+    println("Big modulus calculated");
     let big_modulus_non_zero = NonZero::new(big_modulus).expect("Big modulus cannot be zero");
     
     // Store original value for the final multiplication
@@ -118,12 +130,12 @@ fn mod_65537(base: &U2048, modulus: &NonZero<U2048>) -> U2048 {
     for _ in 0..16 {
         // Square (multiply by itself) and reduce
         let result1: U4096 = (result).mul(&result);
-        result = U2048::from_be_slice(&result1.rem(&big_modulus_non_zero).to_be_bytes()[32..]);
+        result = U2048::from_be_slice(&result1.rem(&big_modulus_non_zero).to_be_bytes()[256..]);
     }
     
     // Final multiply: result * base_mod mod modulus (for the +1 in 2^16+1)
     let final_mul: U4096 = (result).mul(&base_mod);
-    U2048::from_be_slice(&final_mul.rem(&big_modulus_non_zero).to_be_bytes()[32..])
+    U2048::from_be_slice(&final_mul.rem(&big_modulus_non_zero).to_be_bytes()[256..])
 }
 
 fn main() {
@@ -178,19 +190,20 @@ fn main() {
     println("jwt_str: ");
     println(jwt_str);
     let dot2 = jwt_str.rfind('.').expect("Missing signature '.'");
-    let signed_data = &jwt_str[..dot2];
-    let dot1 = signed_data.find('.').expect("Missing payload '.'");
-    let header_encoded = &signed_data[..dot1];
-    let payload_encoded = &signed_data[dot1+1..];
+    let signed_str = &jwt_str[..dot2];
+    let signed_data = &jwt_bytes[..dot2];
     let sig_bytes = base64_url_decode(&jwt_str[dot2+1..]);
+    let dot1 = signed_str.find('.').expect("Missing payload '.'");
+    let header_encoded = &signed_str[..dot1];
+    let payload_encoded = &signed_str[dot1+1..];
 
     let header_decoded = base64_url_decode(header_encoded);
     let header_str = core::str::from_utf8(&header_decoded).expect("Invalid UTF-8 JWT");
-    println("header_decoded: ");
+    println("header: ");
     println(header_str);
     let payload_decoded = base64_url_decode(payload_encoded);
     let payload_str = core::str::from_utf8(&payload_decoded).expect("Invalid UTF-8 JWT");
-    println("payload_decoded: ");
+    println("payload: ");
     println(payload_str);
 
     // --- JSON structural checks ---
@@ -221,13 +234,28 @@ fn main() {
     // email_verified
     let ev = get_json_value(payload_str, "email_verified");
     assert!(ev == "true", "email_verified must be true");
+    println("JSON checks passed");
 
     // --- RSA signature (RS256) verification ---
     // Compute SHA256(header.payload)
-    let hash = sha256(signed_data.as_bytes());
-    // Use RSA verification with built-in modulus
-    let sig_valid = rsa_verify_complete(&sig_bytes, rsa_exponent, &hash);
+    let hash = sha256(signed_data);
+    println("signed hash calculated");
+    
+    // Extract kid from header
+    let alg = get_json_value(header_str, "alg");
+    assert!(alg == "\"RS256\"", "alg must be RS256");
+    let typ = get_json_value(header_str, "typ");
+    assert!(typ == "\"JWT\"", "typ must be JWT");
+    let kid = get_json_value(header_str, "kid");
+    assert!(kid.starts_with('"') && kid.ends_with('"'), "kid not string");
+    let kid_str = &kid[1..kid.len()-1];
+    println("Using kid: ");
+    println(kid_str);
+    
+    // Use RSA verification with the specified kid
+    let sig_valid = rsa_verify_complete(&sig_bytes, rsa_exponent, &hash, kid_str);
     assert!(sig_valid, "RSA signature verification failed");
+    println("RSA signature verification passed");
 
     // --- Nonce hash check ---
     let nonce_raw = get_json_value(payload_str, "nonce");
@@ -236,6 +264,7 @@ fn main() {
     let nonce_data = [&eph_pk[..], &eph_rand[..]].concat();
     let nonce_hash = sha256(&nonce_data);
     assert!(nonce_hash.as_slice() == nonce_bytes.as_slice(), "nonce mismatch");
+    println("Nonce hash check passed");
 
     // --- addr_seed & public_inputs_hash ---
     let pkey_data = [&uid[..], &aud[..], &pepper[..]].concat();
@@ -248,9 +277,11 @@ fn main() {
             pkey[start], pkey[start + 1], pkey[start + 2], pkey[start + 3]
         ]);
     }
+    println("pkey_u32 calculated");
+    println(format!("{:?}", pkey_u32));
 
     // Reveal the last 5 u32s as public inputs
-    for (offset, &value) in pkey_u32[3..8].iter().enumerate() {
-        reveal_u32(value, offset - 3);
+    for (offset, &value) in pkey_u32[..].iter().enumerate() {
+        reveal_u32(value, offset);
     }
 }
