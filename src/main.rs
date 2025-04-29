@@ -15,7 +15,13 @@ fn base64_url_decode(s: &str) -> Vec<u8> {
     let mut b64 = s.replace('-', "+").replace('_', "/");
     let pad = (4 - b64.len() % 4) % 4;
     for _ in 0..pad { b64.push('='); }
-    STANDARD.decode(&b64).expect("Invalid Base64URL")
+    let bytes = STANDARD.decode(&b64).expect("Invalid Base64URL");
+    bytes
+}
+
+fn base64_url_encode(s: &[u8]) -> String {
+    let b64 = STANDARD.encode(s);
+    b64.replace('+', "-").replace('/', "_")
 }
 
 // Helper: decimal string → byte array
@@ -162,42 +168,53 @@ fn main() {
     }
     
     let eph_pk = read_u256_bytes();
+    println("eph_pk: ");
     println(STANDARD.encode(eph_pk));
     let eph_rand = read_u256_bytes();
+    println("eph_rand: ");
     println(STANDARD.encode(eph_rand));
     let pepper = read_u256_bytes();
+    println("pepper: ");
     println(STANDARD.encode(pepper));
     
     let epoch: u64 = read::<u64>();
+    println("epoch: ");
     println(epoch.to_string());
 
     // Process JWT
     let jwt_str = core::str::from_utf8(&jwt_bytes).expect("Invalid UTF-8 JWT");
-    // Split off signature (base64url)
-    // Print the JWT string for debugging
+    println("jwt_str: ");
     println(jwt_str);
     let dot2 = jwt_str.rfind('.').expect("Missing signature '.'");
     let signed_data = &jwt_str[..dot2];
-    let sig_b64 = &jwt_str[dot2+1..];
-    let sig_bytes = base64_url_decode(sig_b64);
-    // Split header.payload → decode payload JSON
     let dot1 = signed_data.find('.').expect("Missing payload '.'");
-    let payload_json = &signed_data[dot1+1..];
+    let header_encoded = &signed_data[..dot1];
+    let payload_encoded = &signed_data[dot1+1..];
+    let sig_bytes = base64_url_decode(&jwt_str[dot2+1..]);
+
+    let header_decoded = base64_url_decode(header_encoded);
+    let header_str = core::str::from_utf8(&header_decoded).expect("Invalid UTF-8 JWT");
+    println("header_decoded: ");
+    println(header_str);
+    let payload_decoded = base64_url_decode(payload_encoded);
+    let payload_str = core::str::from_utf8(&payload_decoded).expect("Invalid UTF-8 JWT");
+    println("payload_decoded: ");
+    println(payload_str);
 
     // --- JSON structural checks ---
-    assert!(payload_json.starts_with('{') && payload_json.ends_with('}'), "Bad JSON");
-    assert!(!payload_json[1..payload_json.len()-1].contains('{'), "Nested object");
-    assert!(!payload_json.contains('['), "Arrays disallowed");
+    assert!(payload_str.starts_with('{') && payload_str.ends_with('}'), "Bad JSON");
+    assert!(!payload_str[1..payload_str.len()-1].contains('{'), "Nested object");
+    assert!(!payload_str.contains('['), "Arrays disallowed");
     // --- Extract & validate each field ---
     // aud
-    let aud_raw = get_json_value(payload_json, "aud");
+    let aud_raw = get_json_value(&payload_str, "aud");
     assert!(aud_raw.starts_with('"') && aud_raw.ends_with('"'), "aud not string");
     let aud = str_to_bytes(&aud_raw[1..aud_raw.len()-1]);
     // iss
-    let iss_raw = get_json_value(payload_json, "iss");
+    let iss_raw = get_json_value(&payload_str, "iss");
     assert!(iss_raw.starts_with('"') && iss_raw.ends_with('"'), "iss not string");
     // uid
-    let uid_raw = get_json_value(payload_json, "sub");
+    let uid_raw = get_json_value(&payload_str, "sub");
     let uid = if uid_raw.starts_with('"') {
         assert!(uid_raw.ends_with('"'), "uid not string");
         str_to_bytes(&uid_raw[1..uid_raw.len()-1])
@@ -205,12 +222,12 @@ fn main() {
         str_to_bytes(uid_raw)
     };
     // Verify that iat is not too far from current epoch
-    let iat: u64 = get_json_value(payload_json, "iat").parse().expect("iat not number");
+    let iat: u64 = get_json_value(&payload_str, "iat").parse().expect("iat not number");
     const MAX_JWT_AGE_SECONDS: u64 = 86400; // 24 hours
     let time_diff = if epoch > iat { epoch - iat } else { iat - epoch };
     assert!(time_diff <= MAX_JWT_AGE_SECONDS, "JWT is too old or from the future");
     // email_verified
-    let ev = get_json_value(payload_json, "email_verified");
+    let ev = get_json_value(&payload_str, "email_verified");
     assert!(ev == "True", "email_verified must be true");
 
     // --- RSA signature (RS256) verification ---
@@ -221,7 +238,7 @@ fn main() {
     assert!(sig_valid, "RSA signature verification failed");
 
     // --- Nonce hash check ---
-    let nonce_raw = get_json_value(payload_json, "nonce");
+    let nonce_raw = get_json_value(&payload_str, "nonce");
     assert!(nonce_raw.starts_with('"') && nonce_raw.ends_with('"'), "nonce not string");
     let nonce_bytes = base64_url_decode(&nonce_raw[1..nonce_raw.len()-1]);
     let nonce_data = [&eph_pk[..], &eph_rand[..]].concat();
