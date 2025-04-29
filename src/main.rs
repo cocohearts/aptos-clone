@@ -127,6 +127,7 @@ fn main() {
     // Read all inputs first
     // JWT data
     let jwt_len: u64 = read();
+    println!("JWT length: {}", jwt_len);
     let mut jwt_bytes = Vec::with_capacity(jwt_len as usize);
     for _ in 0..jwt_len {
         jwt_bytes.push(read::<u8>());
@@ -140,13 +141,13 @@ fn main() {
     fn read_u256_bytes() -> [u8; 32] {
         let mut bytes = [0u8; 32];
         
-        for i in 0..4 {
-            let mut word = read::<u64>();
+        for i in 0..2 {
+            let mut word = read::<u128>();
             
-            // Extract 8 bytes from the u64 using modulo, in big-endian order
-            for j in 0..8 {
+            // Extract 16 bytes from the u128 using modulo, in big-endian order
+            for j in 0..16 {
                 // For big-endian, place bytes from end to start
-                bytes[i * 8 + 7 - j] = (word % 256) as u8;
+                bytes[i * 16 + 15 - j] = (word % 256) as u8;
                 word /= 256;
             }
         }
@@ -162,6 +163,8 @@ fn main() {
     // Process JWT
     let jwt_str = core::str::from_utf8(&jwt_bytes).expect("Invalid UTF-8 JWT");
     // Split off signature (base64url)
+    // Print the JWT string for debugging
+    println!("JWT: {}", jwt_str);
     let dot2 = jwt_str.rfind('.').expect("Missing signature '.'");
     let signed_data = &jwt_str[..dot2];
     let sig_b64 = &jwt_str[dot2+1..];

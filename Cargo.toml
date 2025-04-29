@@ -1,13 +1,20 @@
 [package]
 name = "aptos-clone"
 version = "0.1.0"
-edition = "2024"
+edition = "2025"
+
+[[bin]]
+name = "gen_nonce"
+path = "src/gen_nonce.rs"
+
+[[bin]]
+name = "gen_inputs"
+path = "src/gen_inputs.rs"
 
 [dependencies]
 openvm = { git = "https://github.com/openvm-org/openvm.git", features = ["std"] }
 openvm-sha256-guest = { git = "https://github.com/openvm-org/openvm.git" }
-hex = { version = "0.4.3", default-features = false, features = ["alloc"] }
-base64 = "0.21.0"
-crypto-bigint = "0.5.3"
 sha2 = "0.10.8"
-rand = "0.9.1"
+rand = "0.8.5"
+base64 = "0.21.0"
+serde_json = "1.0"
