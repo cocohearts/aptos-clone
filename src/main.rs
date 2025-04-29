@@ -1,4 +1,7 @@
 // src/main.rs
+//#![no_std]
+//#![no_main]
+
 use std::vec::Vec;
 use openvm::io::{read, reveal_u32};
 use base64::Engine;
@@ -147,7 +150,7 @@ fn main() {
             // Extract 16 bytes from the u128 using modulo, in big-endian order
             for j in 0..16 {
                 // For big-endian, place bytes from end to start
-                bytes[i * 16 + 15 - j] = (word % 256) as u8;
+                bytes[i * 16 + j] = (word % 256) as u8;
                 word /= 256;
             }
         }
