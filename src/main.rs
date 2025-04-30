@@ -138,7 +138,7 @@ fn mod_65537_with_quotients(base: &U2048, modulus: &NonZero<U2048>, quotients: &
     println("Beginning exponentiation with quotients");
     
     // Square 16 times (for 2^16)
-    for quotient in quotients.iter() {
+    for quotient in quotients.iter().take(16) {
         // Square (multiply by itself)
         let result_squared: U4096 = result.mul(&result);
         
