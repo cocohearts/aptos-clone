@@ -4,7 +4,7 @@ first get openvm global install
 then run
 cargo install --path .
 
-for input generation, call gen_nonce.rs then gen_inputs.rs (search online to run Rust binaries)
+for input generation: un-comment the binaries in Cargo.toml, then run `cargo run --bin gen_nonce && cargo run --bin gen_inputs -- jwt.txt`, then comment the binaries out again
 
 then call 
 `cargo openvm build && cargo openvm keygen && OPENVM_FAST_TEST=1 cargo openvm prove app --input input.json`

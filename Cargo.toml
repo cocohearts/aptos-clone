@@ -7,9 +7,9 @@ edition = "2024"
 #name = "gen_nonce"
 #path = "src/gen_nonce.rs"
 
-#[[bin]]
-#name = "gen_inputs"
-#path = "src/gen_inputs.rs"
+[[bin]]
+name = "gen_inputs"
+path = "src/gen_inputs.rs"
 
 [dependencies]
 openvm = { git = "https://github.com/openvm-org/openvm.git", features = ["std"] }
@@ -20,3 +20,8 @@ rand = "0.8.5"
 base64 = "0.21.0"
 serde_json = "1.0"
 crypto-bigint = "0.5"
+
+[profile.release]
+panic = "abort"
+lto = "fat"
+strip = true
